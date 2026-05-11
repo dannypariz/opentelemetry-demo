@@ -93,7 +93,36 @@ jobs:
               f.write(f"has_changes={'true' if services else 'false'}\n")
           EOF
 
-      # ── 2. Authenticate to GHCR ───────────────────────────────────────────
+      # ── 2. Detect flagd-only change (fast path trigger) ──────────────────
+      - name: Detect flagd change
+        id: flagd
+        run: |
+          python3 - <<'EOF'
+          import os, subprocess
+
+          result = subprocess.run(
+              ["git", "diff", "--name-only", "HEAD~1", "HEAD"],
+              capture_output=True, text=True
+          )
+          if result.returncode != 0 or not result.stdout.strip():
+              result = subprocess.run(
+                  ["git", "show", "--name-only", "--format=", "HEAD"],
+                  capture_output=True, text=True
+              )
+          changed_files = result.stdout.strip().splitlines()
+
+          flagd_changed = any(f == "src/flagd/demo.flagd.json" for f in changed_files)
+          non_flagd_changed = any(f != "src/flagd/demo.flagd.json" for f in changed_files)
+          flagd_only = flagd_changed and not non_flagd_changed
+
+          print(f"flagd changed: {flagd_changed}, flagd_only: {flagd_only}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"changed={'true' if flagd_changed else 'false'}\n")
+              f.write(f"only={'true' if flagd_only else 'false'}\n")
+          EOF
+
+      # ── 3. Authenticate to GHCR ────────────────────────────────────────────
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -107,9 +136,9 @@ jobs:
       - name: Load build args from .env
         run: grep -E '^OTEL_JAVA_AGENT_VERSION=|^OPENTELEMETRY_CPP_VERSION=' .env >> $GITHUB_ENV 2>/dev/null || true
 
-      # ── 3. Build and push changed services ───────────────────────────────
+      # ── 4. Build and push changed services (skipped on flagd-only change) ──
       - name: Build and push changed service images
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' && steps.flagd.outputs.only != 'true'
         env:
           SERVICES: ${{ steps.changes.outputs.services }}
           SHA: ${{ github.sha }}
@@ -143,9 +172,9 @@ jobs:
               subprocess.run(cmd, check=True)
           EOF
 
-      # ── 4. Update image manifest with new SHAs ───────────────────────────
+      # ── 5. Update image manifest ─────────────────────────────────────────
       - name: Update image manifest
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' && steps.flagd.outputs.only != 'true'
         env:
           SERVICES: ${{ steps.changes.outputs.services }}
           SHA: ${{ github.sha }}
@@ -178,8 +207,9 @@ jobs:
           print(json.dumps(manifest, indent=2))
           EOF
 
-      # ── 5. Generate Helm image override values ────────────────────────────
+      # ── 6. Generate Helm image overrides ──────────────────────────────
       - name: Generate Helm image overrides
+        if: steps.flagd.outputs.only != 'true'
         run: |
           python3 - <<'EOF'
           import json
@@ -205,7 +235,7 @@ jobs:
           print(content)
           EOF
 
-      # ── 6. Deploy to GKE ──────────────────────────────────────────────────
+      # ── 7. Authenticate to GCP ─────────────────────────────────────────────
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
@@ -218,7 +248,9 @@ jobs:
           location: ${{ env.CLUSTER_ZONE }}
           project_id: ${{ env.GCP_PROJECT }}
 
+      # ── 8. Full Helm deploy (skipped on flagd-only change) ──────────────────
       - name: Deploy with Helm
+        if: steps.flagd.outputs.only != 'true'
         run: |
           helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
           helm repo update
@@ -230,19 +262,40 @@ jobs:
             --atomic \
             --timeout 10m
 
-      # ── 7. Post Grafana deploy annotation ────────────────────────────────
+      # ── 9. Fast path: patch flagd ConfigMap directly (~30s, no image rebuild) ──
+      - name: Patch flagd ConfigMap
+        if: steps.flagd.outputs.changed == 'true'
+        run: |
+          FLAGD_JSON=$(cat src/flagd/demo.flagd.json)
+          PATCH=$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+patch = {\"data\": {\"demo.flagd.json\": json.dumps(data, indent=2)}}
+print(json.dumps(patch))
+" <<< "$FLAGD_JSON")
+          kubectl patch configmap flagd-config \
+            -n ${{ env.NAMESPACE }} \
+            --patch "$PATCH"
+          echo "flagd ConfigMap patched — flag changes live in ~5s"
+
+      # ── 10. Post Grafana deploy annotation ──────────────────────────────
       - name: Annotate Grafana
         if: always()
         env:
           SERVICES: ${{ steps.changes.outputs.services }}
           SHA: ${{ github.sha }}
           JOB_STATUS: ${{ job.status }}
+          FLAGD_ONLY: ${{ steps.flagd.outputs.only }}
         run: |
-          COMPONENTS=$(echo "$SERVICES" | python3 -c "
-          import json,sys
-          svcs=json.load(sys.stdin)
-          print(', '.join(s['component'] for s in svcs) if svcs else 'no service changes')
-          " 2>/dev/null || echo "unknown")
+          if [ "$FLAGD_ONLY" = "true" ]; then
+            COMPONENTS="flagd config patch"
+          else
+            COMPONENTS=$(echo "$SERVICES" | python3 -c "
+import json,sys
+svcs=json.load(sys.stdin)
+print(', '.join(s['component'] for s in svcs) if svcs else 'config/workflow update')
+" 2>/dev/null || echo "unknown")
+          fi
           SHORT_SHA=$(echo "$SHA" | cut -c1-7)
           TEXT="Deploy ${JOB_STATUS}: ${COMPONENTS} — <a href='https://github.com/${{ github.repository }}/commit/${SHA}'>${SHORT_SHA}</a>"
 
@@ -252,9 +305,9 @@ jobs:
             -d "{\"text\": \"${TEXT}\", \"tags\": [\"deploy\", \"otel-demo\"]}" \
             "${{ env.GRAFANA_URL }}/api/annotations" || echo "Grafana annotation skipped (non-fatal)"
 
-      # ── 8. Commit updated image manifest ─────────────────────────────────
+      # ── 11. Commit updated image manifest ──────────────────────────────
       - name: Commit image manifest
-        if: steps.changes.outputs.has_changes == 'true' && success()
+        if: steps.changes.outputs.has_changes == 'true' && steps.flagd.outputs.only != 'true' && success()
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: update image manifest for ${{ github.sha }} [skip ci]"

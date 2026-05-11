@@ -132,7 +132,6 @@
         "off": false
       },
       "defaultVariant": "off"
-
     },
     "emailMemoryLeak": {
       "description": "Memory leak in the email service.",
@@ -144,6 +143,15 @@
         "100x": 100,
         "1000x": 1000,
         "10000x": 10000
+      },
+      "defaultVariant": "off"
+    },
+    "checkoutSlowness": {
+      "description": "N+1 bug: checkout makes a sequential 280ms product-catalog call per cart item instead of processing efficiently",
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
       },
       "defaultVariant": "off"
     }
