@@ -514,8 +514,12 @@ func (cs *checkout) emptyUserCart(ctx context.Context, userID string) error {
 
 func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, userCurrency string) ([]*pb.OrderItem, error) {
 	out := make([]*pb.OrderItem, len(items))
+	n1BugEnabled := cs.isFeatureFlagEnabled(ctx, "checkoutSlowness")
 
 	for i, item := range items {
+		if n1BugEnabled {
+			time.Sleep(280 * time.Millisecond)
+		}
 		product, err := cs.productCatalogSvcClient.GetProduct(ctx, &pb.GetProductRequest{Id: item.GetProductId()})
 		if err != nil {
 			return nil, fmt.Errorf("failed to get product #%q", item.GetProductId())
