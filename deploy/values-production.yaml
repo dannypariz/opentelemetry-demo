@@ -1,0 +1,8 @@
+# Base Helm values for GKE production deployment (dannyp-otel-demo).
+# Per-service image overrides are tracked in deploy/image-manifest.json
+# and applied automatically by the deploy-gke workflow.
+default:
+  image:
+    pullPolicy: Always
+    pullSecrets:
+      - ghcr-pull-secret
