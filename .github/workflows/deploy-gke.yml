@@ -209,7 +209,7 @@ jobs:
 
       # ── 6. Generate Helm image overrides ──────────────────────────────
       - name: Generate Helm image overrides
-        if: steps.flagd.outputs.only != 'true'
+        if: steps.flagd.outputs.only != 'true' && (steps.changes.outputs.has_changes == 'true' || inputs.force_rebuild == true)
         run: |
           python3 - <<'EOF'
           import json
@@ -250,7 +250,7 @@ jobs:
 
       # ── 8. Full Helm deploy (skipped on flagd-only change) ──────────────────
       - name: Deploy with Helm
-        if: steps.flagd.outputs.only != 'true'
+        if: steps.flagd.outputs.only != 'true' && (steps.changes.outputs.has_changes == 'true' || inputs.force_rebuild == true)
         run: |
           helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
           helm repo update
