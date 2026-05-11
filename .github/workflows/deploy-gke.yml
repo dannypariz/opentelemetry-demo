@@ -157,13 +157,13 @@ jobs:
               print(f"\n▶ Building {image}")
               cmd = [
                   "docker", "buildx", "build",
-                  "--context", ".",
                   "--file", f"{svc['dir']}/Dockerfile",
                   "--tag", image,
                   "--push",
                   "--platform", "linux/amd64",
                   "--cache-from", f"type=gha,scope={svc['slug']}",
                   "--cache-to", f"type=gha,scope={svc['slug']},mode=max",
+                  ".",
               ]
               if java_ver:
                   cmd += ["--build-arg", f"OTEL_JAVA_AGENT_VERSION={java_ver}"]
