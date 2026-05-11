@@ -266,17 +266,19 @@ jobs:
       - name: Patch flagd ConfigMap
         if: steps.flagd.outputs.changed == 'true'
         run: |
-          FLAGD_JSON=$(cat src/flagd/demo.flagd.json)
-          PATCH=$(python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-patch = {\"data\": {\"demo.flagd.json\": json.dumps(data, indent=2)}}
-print(json.dumps(patch))
-" <<< "$FLAGD_JSON")
-          kubectl patch configmap flagd-config \
-            -n ${{ env.NAMESPACE }} \
-            --patch "$PATCH"
-          echo "flagd ConfigMap patched — flag changes live in ~5s"
+          python3 - <<'EOF'
+          import json, subprocess, os
+          with open("src/flagd/demo.flagd.json") as fh:
+              flags_data = json.load(fh)
+          patch = json.dumps({"data": {"demo.flagd.json": json.dumps(flags_data, indent=2)}})
+          result = subprocess.run(
+              ["kubectl", "patch", "configmap", "flagd-config",
+               "-n", "otel-demo", "--patch", patch],
+              check=True, capture_output=True, text=True
+          )
+          print(result.stdout or "configmap/flagd-config patched")
+          print("flagd ConfigMap patched - flag changes live in ~5s")
+          EOF
 
       # ── 10. Post Grafana deploy annotation ──────────────────────────────
       - name: Annotate Grafana
@@ -290,11 +292,7 @@ print(json.dumps(patch))
           if [ "$FLAGD_ONLY" = "true" ]; then
             COMPONENTS="flagd config patch"
           else
-            COMPONENTS=$(echo "$SERVICES" | python3 -c "
-import json,sys
-svcs=json.load(sys.stdin)
-print(', '.join(s['component'] for s in svcs) if svcs else 'config/workflow update')
-" 2>/dev/null || echo "unknown")
+            COMPONENTS=$(python3 -c "import json,os; svcs=json.loads(os.environ.get('SERVICES','[]')); print(', '.join(s['component'] for s in svcs) if svcs else 'config/workflow update')" 2>/dev/null || echo "unknown")
           fi
           SHORT_SHA=$(echo "$SHA" | cut -c1-7)
           TEXT="Deploy ${JOB_STATUS}: ${COMPONENTS} — <a href='https://github.com/${{ github.repository }}/commit/${SHA}'>${SHORT_SHA}</a>"
