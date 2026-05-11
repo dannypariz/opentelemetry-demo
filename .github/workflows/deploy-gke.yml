@@ -40,11 +40,8 @@ jobs:
         env:
           FORCE: ${{ inputs.force_rebuild }}
         run: |
-          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git show --name-only --format="" HEAD)
-          echo "Changed files: $CHANGED"
-
           python3 - <<'EOF'
-          import os, json
+          import os, json, subprocess
 
           SERVICE_MAP = {
               "src/accounting":      "accounting",
@@ -69,7 +66,18 @@ jobs:
           }
 
           force = os.environ.get("FORCE", "false").lower() == "true"
-          changed = os.environ.get("CHANGED", "")
+
+          result = subprocess.run(
+              ["git", "diff", "--name-only", "HEAD~1", "HEAD"],
+              capture_output=True, text=True
+          )
+          if result.returncode != 0 or not result.stdout.strip():
+              result = subprocess.run(
+                  ["git", "show", "--name-only", "--format=", "HEAD"],
+                  capture_output=True, text=True
+              )
+          changed = result.stdout.strip()
+          print(f"Changed files:\n{changed or '(none)'}")
 
           services = []
           for src_dir, component in SERVICE_MAP.items():
@@ -84,10 +92,8 @@ jobs:
               f.write(f"services={output}\n")
               f.write(f"has_changes={'true' if services else 'false'}\n")
           EOF
-        env:
-          CHANGED: ${{ env.CHANGED }}
 
-      # ── 2. Authenticate to GHCR ────────────────────────────────────────────
+      # ── 2. Authenticate to GHCR ───────────────────────────────────────────
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -101,7 +107,7 @@ jobs:
       - name: Load build args from .env
         run: grep -E '^OTEL_JAVA_AGENT_VERSION=|^OPENTELEMETRY_CPP_VERSION=' .env >> $GITHUB_ENV 2>/dev/null || true
 
-      # ── 3. Build and push changed services ────────────────────────────────
+      # ── 3. Build and push changed services ───────────────────────────────
       - name: Build and push changed service images
         if: steps.changes.outputs.has_changes == 'true'
         env:
@@ -137,7 +143,7 @@ jobs:
               subprocess.run(cmd, check=True)
           EOF
 
-      # ── 4. Update image manifest with new SHAs ─────────────────────────────
+      # ── 4. Update image manifest with new SHAs ───────────────────────────
       - name: Update image manifest
         if: steps.changes.outputs.has_changes == 'true'
         env:
@@ -233,10 +239,10 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: |
           COMPONENTS=$(echo "$SERVICES" | python3 -c "
-import json,sys
-svcs=json.load(sys.stdin)
-print(', '.join(s['component'] for s in svcs) if svcs else 'no service changes')
-" 2>/dev/null || echo "unknown")
+          import json,sys
+          svcs=json.load(sys.stdin)
+          print(', '.join(s['component'] for s in svcs) if svcs else 'no service changes')
+          " 2>/dev/null || echo "unknown")
           SHORT_SHA=$(echo "$SHA" | cut -c1-7)
           TEXT="Deploy ${JOB_STATUS}: ${COMPONENTS} — <a href='https://github.com/${{ github.repository }}/commit/${SHA}'>${SHORT_SHA}</a>"
 
