@@ -1,0 +1,111 @@
+name: Deploy fix on PR merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+    paths:
+      - 'k8s/checkout-config.yaml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  CLUSTER_NAME: dannyp-otel-demo
+  CLUSTER_ZONE: us-central1-a
+  GCP_PROJECT: solutions-engineering-248511
+  NAMESPACE: otel-demo
+  GRAFANA_URL: https://oteldemodanny.grafana.net
+
+jobs:
+  deploy:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read checkout config
+        id: config
+        run: |
+          BUG=$(python3 -c "
+import re
+content = open('k8s/checkout-config.yaml').read()
+m = re.search(r'CHECKOUT_BUG_ENABLED:\s*[\"\']?(\w+)[\"\']?', content)
+print(m.group(1) if m else 'unknown')
+")
+          echo "bug_enabled=$BUG" >> $GITHUB_OUTPUT
+          echo "CHECKOUT_BUG_ENABLED=$BUG"
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          location: ${{ env.CLUSTER_ZONE }}
+          project_id: ${{ env.GCP_PROJECT }}
+
+      - name: Patch checkout deployment
+        env:
+          BUG_ENABLED: ${{ steps.config.outputs.bug_enabled }}
+          SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+          if [ "$BUG_ENABLED" = "false" ]; then
+            VERSION="${SHORT_SHA}-fix"
+          else
+            VERSION="${SHORT_SHA}-buggy"
+          fi
+
+          kubectl patch deployment checkout \
+            -n ${{ env.NAMESPACE }} \
+            --type=strategic \
+            -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"checkout\",\"env\":[{\"name\":\"CHECKOUT_BUG_ENABLED\",\"value\":\"${BUG_ENABLED}\"},{\"name\":\"SERVICE_VERSION\",\"value\":\"${VERSION}\"}]}]}}}}"
+
+          echo "Patched checkout: CHECKOUT_BUG_ENABLED=$BUG_ENABLED SERVICE_VERSION=$VERSION"
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/checkout -n ${{ env.NAMESPACE }} --timeout=3m
+
+      - name: Post Grafana annotation
+        env:
+          SHA: ${{ github.sha }}
+          BUG_ENABLED: ${{ steps.config.outputs.bug_enabled }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+          if [ "$BUG_ENABLED" = "false" ]; then
+            ACTION="fix deployed"
+            TAG="fix"
+          else
+            ACTION="bug re-enabled"
+            TAG="bug"
+          fi
+          TEXT="Checkout ${ACTION}: <a href='https://github.com/${{ github.repository }}/pull/${PR_NUMBER}'>PR #${PR_NUMBER}</a> (${SHORT_SHA})"
+          curl -sf -X POST \
+            -H "Authorization: Bearer ${{ secrets.GRAFANA_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\": \"${TEXT}\", \"tags\": [\"deploy\", \"checkout\", \"${TAG}\"]}" \
+            "${{ env.GRAFANA_URL }}/api/annotations" || echo "Grafana annotation skipped"
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        env:
+          BUG_ENABLED: ${{ steps.config.outputs.bug_enabled }}
+        with:
+          script: |
+            const bugEnabled = process.env.BUG_ENABLED;
+            const body = bugEnabled === 'false'
+              ? '✅ Fix deployed! Checkout patched with `CHECKOUT_BUG_ENABLED=false`. Pod restarting — latency should recover within ~1 minute.'
+              : '🐛 Bug re-enabled. Checkout patched with `CHECKOUT_BUG_ENABLED=true`. N+1 latency will resume within ~30s.';
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });

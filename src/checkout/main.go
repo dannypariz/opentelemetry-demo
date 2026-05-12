@@ -514,7 +514,7 @@ func (cs *checkout) emptyUserCart(ctx context.Context, userID string) error {
 
 func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, userCurrency string) ([]*pb.OrderItem, error) {
 	out := make([]*pb.OrderItem, len(items))
-	n1BugEnabled := cs.isFeatureFlagEnabled(ctx, "checkoutSlowness")
+	n1BugEnabled := os.Getenv("CHECKOUT_BUG_ENABLED") == "true"
 
 	for i, item := range items {
 		if n1BugEnabled {

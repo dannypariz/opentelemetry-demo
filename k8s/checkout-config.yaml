@@ -1,0 +1,13 @@
+# Checkout service runtime configuration
+#
+# DEMO FLOW:
+#   1. This file controls the N+1 latency bug in the checkout service.
+#   2. To trigger the fix: change CHECKOUT_BUG_ENABLED to "false" and open a PR.
+#   3. Merging the PR triggers deploy-on-merge.yml which patches the deployment (~30s, no image rebuild).
+#
+# To reset the bug locally: ./deploy.sh --enable-bug
+
+checkout:
+  env:
+    CHECKOUT_BUG_ENABLED: "true"
+    SERVICE_VERSION: "buggy"
