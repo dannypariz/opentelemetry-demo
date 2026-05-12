@@ -1,1 +1,6 @@
-{}
+{
+  "checkout": {
+    "repository": "ghcr.io/dannypariz/opentelemetry-demo",
+    "tag": "checkout-0044a4b7fefe43fb54509124e62c5601e7c0159d"
+  }
+}
